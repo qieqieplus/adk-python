@@ -1515,6 +1515,81 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_with_logprobs(
+    lite_llm_instance, mock_acompletion
+):
+  mock_response_with_logprobs = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              ),
+              logprobs={"token": -0.123, "content": None},
+          )
+      ],
+  )
+  mock_acompletion.return_value = mock_response_with_logprobs
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      logprobs=True,
+      top_logprobs=5,
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    assert response.content.parts[0].text == "Test response"
+    assert response.custom_metadata["logprobs"] == {
+        "token": -0.123,
+        "content": None,
+    }
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["logprobs"] is True
+  assert kwargs["top_logprobs"] == 5
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_logprobs(
+    mock_completion, lite_llm_instance
+):
+  streaming_model_response_with_logprobs = [
+      *STREAMING_MODEL_RESPONSE,
+      ModelResponse(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  logprobs={"token": -0.123, "content": None},
+              )
+          ],
+      ),
+  ]
+
+  mock_completion.return_value = iter(
+      streaming_model_response_with_logprobs
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  assert len(responses) == 4
+  assert responses[3].custom_metadata["logprobs"] == {
+      "token": -0.123,
+      "content": None,
+  }
+
+
+@pytest.mark.asyncio
 def test_get_completion_inputs_generation_params():
   # Test that generation_params are extracted and mapped correctly
   req = LlmRequest(

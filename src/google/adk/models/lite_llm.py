@@ -84,6 +84,10 @@ class UsageMetadataChunk(BaseModel):
   total_tokens: int
 
 
+class LogProbsChunk(BaseModel):
+  logprobs: Any
+
+
 class LiteLLMClient:
   """Provides acompletion method (for better testability)."""
 
@@ -397,7 +401,9 @@ def _model_response_to_chunk(
     response: ModelResponse,
 ) -> Generator[
     Tuple[
-        Optional[Union[TextChunk, FunctionChunk, UsageMetadataChunk]],
+        Optional[
+            Union[TextChunk, FunctionChunk, UsageMetadataChunk, LogProbsChunk]
+        ],
         Optional[str],
     ],
     None,
@@ -414,6 +420,9 @@ def _model_response_to_chunk(
 
   message = None
   if response.get("choices", None):
+    logprobs = response["choices"][0].get("logprobs", None)
+    if logprobs is not None:
+      yield LogProbsChunk(logprobs=logprobs), None
     message = response["choices"][0].get("message", None)
     finish_reason = response["choices"][0].get("finish_reason", None)
     # check streaming delta
@@ -466,8 +475,10 @@ def _model_response_to_generate_content_response(
   """
 
   message = None
+  logprobs = None
   if response.get("choices", None):
     message = response["choices"][0].get("message", None)
+    logprobs = response["choices"][0].get("logprobs", None)
 
   if not message:
     raise ValueError("No message in response")
@@ -479,6 +490,8 @@ def _model_response_to_generate_content_response(
         candidates_token_count=response["usage"].get("completion_tokens", 0),
         total_token_count=response["usage"].get("total_tokens", 0),
     )
+  if logprobs is not None:
+    llm_response.custom_metadata = {"logprobs": logprobs.model_dump()}
   return llm_response
 
 
@@ -589,8 +602,13 @@ def _get_completion_inputs(
         mapped_key = param_mapping.get(key, key)
         generation_params[mapped_key] = config_dict[key]
 
-      if not generation_params:
-        generation_params = None
+    if llm_request.logprobs is not None:
+      generation_params["logprobs"] = llm_request.logprobs
+    if llm_request.top_logprobs is not None:
+      generation_params["top_logprobs"] = llm_request.top_logprobs
+
+    if not generation_params:
+      generation_params = None
 
   return messages, tools, response_format, generation_params
 
@@ -756,6 +774,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
+      logprobs = None
       fallback_index = 0
       async for part in await self.llm_client.acompletion(**completion_args):
         for chunk, finish_reason in _model_response_to_chunk(part):
@@ -795,6 +814,8 @@ class LiteLlm(BaseLlm):
                 candidates_token_count=chunk.completion_tokens,
                 total_token_count=chunk.total_tokens,
             )
+          elif isinstance(chunk, LogProbsChunk):
+            logprobs = chunk.logprobs
 
           if (
               finish_reason == "tool_calls" or finish_reason == "stop"
@@ -837,11 +858,20 @@ class LiteLlm(BaseLlm):
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
           usage_metadata = None
+        if logprobs is not None:
+          aggregated_llm_response.custom_metadata = {
+              "logprobs": logprobs.model_dump()
+          }
+          logprobs = None
         yield aggregated_llm_response
 
       if aggregated_llm_response_with_tool_call:
         if usage_metadata:
           aggregated_llm_response_with_tool_call.usage_metadata = usage_metadata
+        if logprobs is not None:
+          aggregated_llm_response_with_tool_call.custom_metadata = {
+              "logprobs": logprobs.model_dump()
+          }
         yield aggregated_llm_response_with_tool_call
 
     else:

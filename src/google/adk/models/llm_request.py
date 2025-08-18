@@ -76,6 +76,12 @@ class LlmRequest(BaseModel):
   tools_dict: dict[str, BaseTool] = Field(default_factory=dict, exclude=True)
   """The tools dictionary."""
 
+  logprobs: Optional[bool] = None
+  """Whether to return logprobs."""
+
+  top_logprobs: Optional[int] = None
+  """The number of top logprobs to return."""
+
   def append_instructions(self, instructions: list[str]) -> None:
     """Appends instructions to the system instruction.
 
